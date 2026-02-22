@@ -20,7 +20,7 @@ st.markdown("""
 # --- منوی سمت چپ (Sidebar) ---
 with st.sidebar:
     # عکس لوگوی دانشگاه (می‌توانی به جای این لینک، بنویسی "logo.jpg" و عکس را در گیت‌هاب آپلود کنی)
-    st.image("https://sirjantech.ac.ir/wp-content/uploads/2021/05/logo-new.png", use_container_width=True)
+    st.image("logo.png", use_container_width=True)
     
     st.markdown("### 🎓 About Project")
     st.markdown("Designed at Sirjan University of Technology")
@@ -115,3 +115,4 @@ else:
                     st.error("❌ متغیر ارتعاش (DE_time یا FE_time) در فایل پیدا نشد.")
             except Exception as e:
                 st.error(f"❌ خطا در پردازش فایل. لطفا فایل دیگری را امتحان کنید. متن خطا: {e}")
+
