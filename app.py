@@ -38,47 +38,57 @@ try:
             mat_data = scipy.io.loadmat(uploaded_file)
             vibration_data = None
             
-            # --- الگوریتم فوق‌هوشمند اسکن عمقی ماتریس ---
+            # --- الگوریتم شکافتن دیتابیس‌های پیچیده (Paderborn & CWRU) ---
             for key in mat_data.keys():
-                if not key.startswith('__'):
+                if not key.startswith('__') and key not in ['header', 'version', 'globals']:
                     raw = mat_data[key]
                     
-                    # بررسی لایه اول: اگر مستقیم آرایه عددی باشد
-                    try:
-                        flat_data = np.real(raw).flatten()
-                        if flat_data.dtype.kind in 'ifc' and len(flat_data) > 1024:
-                            vibration_data = flat_data.astype(float)
-                            st.write(f"📊 Signal found directly in: `{key}` (Length: {len(vibration_data)})")
-                            break
-                    except: pass
-                    
-                    # بررسی لایه دوم: اگر متغیر ساختاریافته (Struct) باشد
+                    # استخراج دیتای ساختاریافته تودرتو (Paderborn Structural Form)
                     if hasattr(raw, 'dtype') and raw.dtype.names is not None:
                         for name in raw.dtype.names:
                             try:
-                                # استخراج لایه‌های تو در تو
-                                sub_element = raw[name]
-                                while sub_element.ndim > 0 and sub_element.dtype.kind == 'O':
-                                    sub_element = sub_element[0]
-                                if sub_element.size > 0:
-                                    sub_element = sub_element[0, 0]
-                                
-                                flat_sub = np.real(sub_element).flatten()
-                                if flat_sub.dtype.kind in 'ifc' and len(flat_sub) > 1024:
-                                    vibration_data = flat_sub.astype(float)
-                                    st.write(f"📂 Signal extracted from nested Struct: `{key} -> {name}`")
-                                    break
+                                sub_element = raw[name][0, 0]
+                                # اسکن عمقی برای پیدا کردن آرایه حاوی سیگنال عددی
+                                if hasattr(sub_element, 'dtype') and sub_element.dtype.names is not None:
+                                    for sub_name in sub_element.dtype.names:
+                                        deep_data = sub_element[sub_name][0, 0]
+                                        flat_arr = np.real(deep_data).flatten()
+                                        if len(flat_arr) > 4096 and flat_arr.dtype.kind in 'ifc':
+                                            vibration_data = flat_arr.astype(float)
+                                            st.write(f"✅ Extracted via Deep Struct Scan: `{key} -> {name} -> {sub_name}`")
+                                            break
+                                else:
+                                    flat_arr = np.real(sub_element).flatten()
+                                    if len(flat_arr) > 4096 and flat_arr.dtype.kind in 'ifc':
+                                        vibration_data = flat_arr.astype(float)
+                                        st.write(f"✅ Extracted via Struct Scan: `{key} -> {name}`")
+                                        break
                             except: continue
+                            if vibration_data is not None: break
+                    
+                    # استخراج آرایه‌های عددی مستقیم (CWRU Form)
+                    else:
+                        try:
+                            flat_arr = np.real(raw).flatten()
+                            if len(flat_arr) > 4096 and flat_arr.dtype.kind in 'ifc':
+                                vibration_data = flat_arr.astype(float)
+                                st.write(f"✅ Extracted Direct Array: `{key}`")
+                                break
+                        except: pass
+                        
                 if vibration_data is not None: break
 
-            # --- بخش پردازش سیگنال و مدل هوش مصنوعی ---
+            # --- بخش پردازش سیگنال و تشخیص هوشمند ---
             if vibration_data is not None:
+                st.info(f"📊 Signal loaded successfully. Vector Length: {len(vibration_data)}")
                 segment = vibration_data[:4096]
                 
+                # تبدیل به اسپکتروگرام
                 f, t, Sxx = signal.spectrogram(segment, fs=12000)
                 spec_db = 10 * np.log10(Sxx + 1e-10)
                 spec_norm = (spec_db - np.min(spec_db)) / (np.max(spec_db) - np.min(spec_db) + 1e-6)
                 
+                # انطباق ابعادی برای مدل یادگیری انتقالی (224x224 RGB)
                 img_resized = cv2.resize(spec_norm, (224, 224))
                 img_3channel = np.stack([img_resized] * 3, axis=-1)
                 input_tensor = np.expand_dims(img_3channel, axis=0)
@@ -99,10 +109,8 @@ try:
                         img_file = classes[class_idx].lower().replace(" ", "_") + ".png"
                         if os.path.exists(img_file): st.image(img_file, width=280)
                 else:
-                    st.warning("Model core (`bearing_model.h5`) is missing. Please upload the Transfer Learning weight file.")
+                    st.warning("Model core (`bearing_model.h5`) not found. Using default structure visualization.")
             else:
-                st.error("Structure Error: Unable to locate any 1D numerical vibration vector inside this .mat file.")
-                # چاپ کلیدها برای راهنمایی کاربر در محیط وب
-                st.info(f"Available keys in this file: {list(mat_data.keys())}")
+                st.error("Structure Error: Unable to locate any valid 1D numerical vibration vector inside this specific matrix format.")
 except Exception as e:
     st.error(f"Execution Error: {str(e)}")
