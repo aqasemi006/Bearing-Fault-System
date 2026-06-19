@@ -1,142 +1,116 @@
-import streamlit as st
-import tensorflow as tf
-import numpy as np
-import scipy.io
-from scipy import signal
 import os
-import cv2
-import io  # کتابخانه استاندارد برای مدیریت بایت‌ها بدون ارور
-import gc
+import numpy as np
+import scipy.io as sio
+import tensorflow as tf
+import streamlit as st
+import matplotlib.pyplot as plt
 
-# --- مدیریت وضعیت سشن ---
-if "current_file" not in st.session_state:
-    st.session_state["current_file"] = None
+# ۱. تنظیمات ظاهری صفحه وب‌اپلیکیشن (مخصوص نسخه آنلاین)
+st.set_page_config(
+    page_title="سیستم هوشمند عیب‌یابی بلبرینگ", 
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
 
-# --- Page Configuration ---
-st.set_page_config(page_title="SUT Bearing Diagnosis", page_icon="⚙️", layout="wide")
+# تعریف کلاس‌ها و ایموجی‌ها به ترتیب آموزش مدل
+SIGNAL_LENGTH = 2048
+class_mapping = {
+    0: ('Ball_Fault (عیب ساچمه/بال)', '🔴'),
+    1: ('Healthy (وضعیت سالم)', '🟢'),
+    2: ('Inner_Race (عیب رینگ داخلی)', '🔵'),
+    3: ('Outer_Race (عیب رینگ خارجی)', '🟠')
+}
 
-# --- Sidebar ---
-with st.sidebar:
-    if os.path.exists("logo.jpg"): st.image("logo.jpg", use_container_width=True)
-    elif os.path.exists("logo.png"): st.image("logo.png", use_container_width=True)
-    st.markdown("### 🎓 Academic Project")
-    st.info("Cross-Domain Fault Diagnosis using Advanced Transfer Learning")
-    st.divider()
-    st.markdown("**Researcher:** Amir Mohammad Ghasemi Nezhad")
-    st.markdown("**Supervisors:** Dr. Abbasloo & Dr. Ghasemi")
+st.title("🎯 سامانه آنلاین پایش وضعیت و عیب‌یابی بلبرینگ")
+st.write("این وب‌اپلیکیشن مجهز به شبکه عصبی عمیق 1D-CNN است که سیگنال‌های ارتعاشی حسگرها را از روی فایل‌های متلب (.mat) تحلیل می‌کند.")
+st.markdown("---")
 
-st.title("Intelligent Bearing Condition Monitoring System")
-st.subheader("Domain Adaptation Framework for Multi-Source Datasets")
-st.divider()
-
+# ۲. بارگذاری بهینه مدل هوش مصنوعی با قابلیت کش در سرور ابری
 @st.cache_resource
 def load_bearing_model():
-    if os.path.exists("bearing_model.h5"):
-        return tf.keras.models.load_model("bearing_model.h5")
+    # پیدا کردن خودکار مسیر فایل مدل در مخزن گیت‌هاب شما
+    model_path = 'bearing_model.keras'
+    if os.path.exists(model_path):
+        try:
+            return tf.keras.models.load_model(model_path)
+        except Exception as e:
+            st.error(f"❌ خطا در بارگذاری ساختار مدل روی سرور: {e}")
+            return None
     return None
 
-try:
-    model = load_bearing_model()
-    uploaded_file = st.file_uploader("Upload Vibration File (.mat)", type=["mat"])
+model = load_bearing_model()
+
+if model is None:
+    st.warning("⚠️ فایل مدل 'bearing_model.keras' در مخزن گیت‌هاب شما پیدا نشند یا به دلیل حجم بالا کامل آپلود نشده است. لطفاً مطمئن شوید فایل مدل در کنار همین اسکریپت در گیت‌هاب قرار دارد.")
+else:
+    st.success("✅ مدل هوشمند با موفقیت روی سرور ابری بارگذاری و آماده کار شد.")
+
+    # ۳. باکس آپلود فایل متلب توسط کاربر در سایت
+    uploaded_file = st.file_uploader("لطفاً فایل متلب (.mat) سیگنال ارتعاشی بلبرینگ را آپلود کنید:", type=["mat"])
 
     if uploaded_file is not None:
-        if st.session_state["current_file"] != uploaded_file.name:
-            st.session_state["current_file"] = uploaded_file.name
-            gc.collect()
+        try:
+            # ۴. خواندن فایل متلب مستقیم از حافظه بافر مرورگر (بدون نیاز به ذخیره روی هارد سرور)
+            mat_contents = sio.loadmat(uploaded_file)
+            
+            # استخراج خودکار متغیر سیگنال عددی درون فایل متلب
+            data_key = [k for k in mat_contents.keys() if not k.startswith('__')][0]
+            raw_signal = mat_contents[data_key].flatten()
 
-        with st.spinner('Parsing Advanced Matrix Structures safely...'):
-            # خواندن مستقیم بایت‌ها با متد استاندارد پایتون برای جلوگیری از کرش
-            file_bytes = uploaded_file.read()
-            bytes_io = io.BytesIO(file_bytes)
-            mat_data = scipy.io.loadmat(bytes_io)
-            
-            # آزادسازی بافرهای خام ورودی
-            del file_bytes
-            bytes_io.close()
-            
-            vibration_data = None
-            target_key = None
-            
-            for key in mat_data.keys():
-                if not key.startswith('__') and key not in ['header', 'version', 'globals']:
-                    target_key = key
-                    break
-            
-            if target_key is not None:
-                raw = mat_data[target_key]
-                
-                # استخراج ساختار پیچیده پادربورن
-                if hasattr(raw, 'dtype') and raw.dtype.names is not None:
-                    for name in raw.dtype.names:
-                        try:
-                            sub_element = raw[name][0, 0]
-                            if hasattr(sub_element, 'dtype') and sub_element.dtype.names is not None:
-                                for sub_name in sub_element.dtype.names:
-                                    deep_data = sub_element[sub_name][0, 0]
-                                    flat_arr = np.real(deep_data).flatten()
-                                    if len(flat_arr) > 1024 and flat_arr.dtype.kind in 'ifc':
-                                        vibration_data = flat_arr.astype(np.float32)
-                                        break
-                            else:
-                                flat_arr = np.real(sub_element).flatten()
-                                if len(flat_arr) > 1024 and flat_arr.dtype.kind in 'ifc':
-                                    vibration_data = flat_arr.astype(np.float32)
-                                    break
-                        except: continue
-                        if vibration_data is not None: break
-                # استخراج ساختار ساده دیتابیس CWRU
-                else:
-                    try:
-                        flat_arr = np.real(raw).flatten()
-                        if len(flat_arr) > 1024 and flat_arr.dtype.kind in 'ifc':
-                            vibration_data = flat_arr.astype(np.float32)
-                    except: pass
-
-            # حذف کامل دیکشنری سنگین از رم سرور
-            del mat_data
-            gc.collect()
-
-            # --- بخش پردازش سیگنال و اجرای مدل یادگیری انتقالی ---
-            if vibration_data is not None:
-                st.info(f"📊 Signal loaded successfully. Vector Length: {len(vibration_data)}")
-                segment = vibration_data[:4096] if len(vibration_data) >= 4096 else vibration_data
-                
-                del vibration_data
-                gc.collect()
-                
-                # تبدیل به تصویر زمان-فرکانس
-                f, t, Sxx = signal.spectrogram(segment, fs=12000)
-                spec_db = 10 * np.log10(Sxx + 1e-10)
-                spec_norm = (spec_db - np.min(spec_db)) / (np.max(spec_db) - np.min(spec_db) + 1e-6)
-                
-                # انطباق ابعادی برای لایه ورودی مدل (224x224 RGB)
-                img_resized = cv2.resize(spec_norm, (224, 224))
-                img_3channel = np.stack([img_resized] * 3, axis=-1)
-                input_tensor = np.expand_dims(img_3channel, axis=0)
-                
-                if model:
-                    prediction = model.predict(input_tensor)
-                    class_idx = np.argmax(prediction)
-                    confidence = prediction[0][class_idx] * 100
-                    
-                    classes = ["Healthy", "Inner Race Fault", "Outer Race Fault", "Ball Fault"]
-                    
-                    st.success("Domain Adaptation Analysis Complete.")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("Generalization Diagnosis", classes[class_idx])
-                        st.metric("Domain Confidence Score", f"{confidence:.2f}%")
-                    with col2:
-                        img_file = classes[class_idx].lower().replace(" ", "_") + ".png"
-                        if os.path.exists(img_file): st.image(img_file, width=280)
-                else:
-                    st.warning("Model core (`bearing_model.h5`) not found.")
+            if len(raw_signal) < SIGNAL_LENGTH:
+                st.error(f"❌ طول سیگنال فایل آپلود شده کمتر از {SIGNAL_LENGTH} است و شبکه نمی‌تواند آن را پردازش کند.")
             else:
-                st.error("Structure Error: No valid 1D numerical vibration vector found inside this file.")
-                
-    else:
-        st.session_state["current_file"] = None
-        gc.collect()
+                st.info(f"📊 فایل با موفقیت در سرور پردازش شد. تعداد کل نقاط داده: {len(raw_signal)}")
 
-except Exception as e:
-    st.error(f"Execution Error: {str(e)}")
+                # ۵. رسم نمودار سیگنال در دامنه زمان
+                st.subheader("📈 نمودار سیگنال ارتعاشی در دامنه زمان (تایم دامین)")
+                segment = raw_signal[0:SIGNAL_LENGTH]
+                
+                fig, ax = plt.subplots(figsize=(10, 3.5))
+                ax.plot(segment, color='#1f77b4', linewidth=1)
+                ax.set_xlabel("Time Samples")
+                ax.set_ylabel("Amplitude")
+                ax.grid(True, linestyle='--', alpha=0.5)
+                st.pyplot(fig)
+
+                # ۶. نرمال‌سازی سیگنال در لحظه (دقیقاً متناسب با زمان آموزش)
+                segment_normalized = (segment - np.min(segment)) / (np.max(segment) - np.min(segment))
+                input_data = np.expand_dims(segment_normalized, axis=0)
+                input_data = np.expand_dims(input_data, axis=-1)
+
+                # ۷. اجرای عملیات استنتاج و پیش‌بینی توسط هوش مصنوعی
+                with st.spinner('در حال تحلیل الگوریتم‌های فرکانسی توسط شبکه ۱ بعدی...'):
+                    predictions = model.predict(input_data)
+                    predicted_class_idx = np.argmax(predictions[0])
+                    class_name, emoji = class_mapping[predicted_class_idx]
+                    confidence = predictions[0][predicted_class_idx] * 100
+
+                st.markdown("---")
+                st.subheader("🎯 نتیجه تحلیل آنلاین هوش مصنوعی")
+                # نمایش خروجی نهایی متناسب با نوع عیب
+                if predicted_class_idx == 1:
+                    st.balloons() # افکت انیمیشنی برای وضعیت بدون عیب
+                    st.success(f"### {emoji} وضعیت بلبرینگ: {class_name} | درصد اطمینان مدل: {confidence:.2f}%")
+                else:
+                    st.error(f"### {emoji} وضعیت بلبرینگ: {class_name} | درصد اطمینان مدل: {confidence:.2f}%")
+
+                # ۸. رسم نمودار توزیع احتمال عیوب به صورت درصد
+                st.subheader("📊 توزیع تفکیکی احتمال عیوب")
+                labels = [class_mapping[i][0].split(' ')[0] for i in range(4)]
+                probabilities = [predictions[0][i] * 100 for i in range(4)]
+
+                fig2, ax2 = plt.subplots(figsize=(8, 3))
+                bars = ax2.barh(labels, probabilities, color=['#ff7f0e', '#2ca02c', '#1f77b4', '#9467bd'])
+                ax2.set_xlim(0, 100)
+                ax2.set_xlabel('Probability (%)')
+                
+                # قرار دادن درصدها روی لبه میله‌های نمودار
+                for bar in bars:
+                    width = bar.get_width()
+                    ax2.text(width + 1, bar.get_y() + bar.get_height()/2, f'{width:.1f}%', 
+                             va='center', ha='left', fontsize=9)
+                
+                st.pyplot(fig2)
+
+        except Exception as e:
+            st.error(f"❌ خطا در ساختار داخلی فایل متلب آپلود شده: {e}")
