@@ -5,11 +5,11 @@ import scipy.io as sio
 import tensorflow as tf
 import streamlit as st
 import matplotlib
-# جلوگیری از خطای مانیتور در سرور ابری
+# جلوگیری از خطای گرافیکی در سرور بدون مانیتور
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-# ۱. تنظیمات ظاهری صفحه
+# تنظیمات اولیه و راست‌چین
 st.set_page_config(
     page_title="سامانه هوشمند پایش وضعیت بیرینگ",
     page_icon="⚙️",
@@ -32,9 +32,13 @@ SIGNAL_LENGTH = 2304
 IMG_ROWS, IMG_COLS = 48, 48
 class_names = ['Ball_Fault', 'Healthy', 'Inner_Race', 'Outer_Race']
 
-# ۲. بارگذاری بهینه مدل
+# لود هوشمند و یکباره مدل با مکانیزم کش استریم‌لیت
 @st.cache_resource
 def load_bearing_model():
+    # غیرفعال کردن لاگ‌های سنگین و اضافی تنسورفلو در سرور
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+    tf.config.set_visible_devices([], 'GPU') # اجبار به استفاده بهینه از CPU در سرور ابری
+    
     model_path = 'bearing_model.keras'
     if os.path.exists(model_path):
         return tf.keras.models.load_model(model_path)
@@ -48,14 +52,16 @@ if model is None:
 else:
     st.success("✅ مدل هوش مصنوعی با موفقیت در سرور ابری بارگذاری شد.")
 
-# ۳. دریافت فایل
 st.write("### 📬 بارگذاری سیگنال ارتعاشی بیرینگ")
 uploaded_file = st.file_uploader("لطفاً فایل متلب بیرینگ (.mat) را انتخاب کنید:", type=["mat"])
 
 if uploaded_file is not None:
-    st.info("📊 در حال استخراج و بهینه‌سازی دیتای سیگنال...")
+    st.info("📊 در حال استخراج و پردازش بهینه دیتای سیگنال...")
     
     try:
+        # پاکسازی کش جلسه قبل تنسورفلو برای جلوگیری از انباشتگی رم
+        tf.keras.backend.clear_session()
+        
         file_bytes = io.BytesIO(uploaded_file.read())
         mat_contents = sio.loadmat(file_bytes)
         raw_signal = None
@@ -107,22 +113,24 @@ if uploaded_file is not None:
                 raw_signal = extract_deep(mat_contents[key])
                 if raw_signal is not None: break
 
+        # آزادسازی دیکشنری متلب از رم بلافاصله پس از استخراج سیگنال
+        del mat_contents
+        
         if raw_signal is None:
             st.error("❌ دیتای عددی معتبری یافت نشد.")
             st.stop()
 
-        # ---- مدیریت و کنترل سقف مصرف حافظه رم سرور ----
         total_points = len(raw_signal)
         num_segments = total_points // SIGNAL_LENGTH
         
-        # اگر تعداد قطعات فایل خیلی زیاد بود، برای جلوگیری از کراش سرور آن را محدود می‌کنیم
-        max_segments_to_process = min(num_segments, 20) 
+        # برای پایداری کامل سرور ابری، تعداد سگمنت‌ها را روی ۱۰ قطعه اول متمرکز می‌کنیم
+        max_segments_to_process = min(num_segments, 10) 
         
-        st.success(f"🎯 سیگنال استخراج شد ({total_points} نقطه). در حال پردازش {max_segments_to_process} قطعه بهینه...")
+        st.success(f"🎯 سیگنال با موفقیت لود شد. در حال عیب‌یابی پایداری بر روی قطعات بهینه...")
 
         all_predictions = []
         
-        # پردازش قطعات تا سقف تعیین شده
+        # فرآیند پیش‌بینی کاملاً ایزوله و بدون ذخیره کردن گراف‌های گرادیان
         for i in range(max_segments_to_process):
             segment = raw_signal[i*SIGNAL_LENGTH : (i+1)*SIGNAL_LENGTH]
             
@@ -135,8 +143,9 @@ if uploaded_file is not None:
             img_rgb = np.stack([matrix_2d, matrix_2d, matrix_2d], axis=-1)
             input_tensor = np.expand_dims(img_rgb, axis=0)
             
-            pred = model.predict(input_tensor, verbose=0)
-            all_predictions.append(pred[0])
+            # استفاده از آپشن لوپ سبک جهت عدم درگیری حافظه
+            pred = model(input_tensor, training=False)
+            all_predictions.append(pred.numpy()[0])
             
         mean_predictions = np.mean(all_predictions, axis=0)
         predicted_class_idx = np.argmax(mean_predictions)
@@ -160,7 +169,7 @@ if uploaded_file is not None:
         
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 7))
         
-        # نمایش شکل موج سیگنال محدود شده جهت کاهش مصرف حافظه گرافیکی
+        # رسم بهینه بدون اشغال بافر
         ax1.plot(raw_signal[:SIGNAL_LENGTH * 2], color='#d62728' if predicted_class_name != 'Healthy' else '#2ca02c', linewidth=0.8)
         ax1.set_title(f"Time Domain Signal (First 2 Segments) - {uploaded_file.name}", fontsize=10, fontweight='bold')
         ax1.set_xlabel("Data Points")
@@ -180,7 +189,11 @@ if uploaded_file is not None:
             
         plt.tight_layout()
         st.pyplot(fig)
-        plt.close(fig) # پاکسازی حافظه فیگورها
+        
+        # تمیزکاری نهایی آبجکت‌های گرافیکی و متغیرهای سنگین از رم سرور
+        plt.close(fig)
+        del raw_signal
+        tf.keras.backend.clear_session()
 
     except Exception as e:
         st.error(f"❌ خطا در پردازش فایل متلب: {e}")
