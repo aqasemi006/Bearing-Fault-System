@@ -97,8 +97,7 @@ if uploaded_file is not None:
                 break
 
         # ج) استراتژی بازگشتی عمیق (پشتیبان نهایی برای پادربورن‌های پیچیده)
-
-if raw_signal is None:
+        if raw_signal is None:
             for key in keys:
                 def extract_deep(obj):
                     if isinstance(obj, np.ndarray):
@@ -179,8 +178,7 @@ if raw_signal is None:
         colors = ['#ff7f0e', '#2ca02c', '#1f77b4', '#9467bd']
         bars = ax2.bar(class_names, mean_predictions * 100, color=colors)
         ax2.set_title("Fault Probability Distribution (%)", fontsize=10, fontweight='bold')
-
-ax2.set_ylabel("Probability")
+        ax2.set_ylabel("Probability")
         ax2.set_ylim(0, 120)
         ax2.grid(True, linestyle=':', alpha=0.5, axis='y')
         
