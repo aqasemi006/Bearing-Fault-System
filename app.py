@@ -5,11 +5,11 @@ import scipy.io as sio
 import tensorflow as tf
 import streamlit as st
 import matplotlib
-# جلوگیری از خطای مانیتور و لود گرافیکی در سرورهای بدون رابط بصری (Headless)
+# جلوگیری از خطای مانیتور در سرور ابری
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-# ۱. تنظیمات ظاهری و راست‌چین کردن صفحه برای زبان فارسی
+# ۱. تنظیمات ظاهری صفحه
 st.set_page_config(
     page_title="سامانه هوشمند پایش وضعیت بیرینگ",
     page_icon="⚙️",
@@ -28,12 +28,11 @@ st.title("⚙️ سامانه هوشمند و تحت وب پایش وضعیت و
 st.subheader("تحلیل فرکانسی و پایش عیوب بیرینگ بر پایه یادگیری انتقالی عمیق ۲ بعدی (CWRU & Paderborn)")
 st.write("---")
 
-# ۲. تنظیمات ابعادی پروژه هماهنگ با مدل ۲بعدی MobileNetV2
 SIGNAL_LENGTH = 2304
 IMG_ROWS, IMG_COLS = 48, 48
 class_names = ['Ball_Fault', 'Healthy', 'Inner_Race', 'Outer_Race']
 
-# ۳. بارگذاری بهینه مدل با مکانیزم Cache (برای جلوگیری از لود مکرر و کندی سرور)
+# ۲. بارگذاری بهینه مدل
 @st.cache_resource
 def load_bearing_model():
     model_path = 'bearing_model.keras'
@@ -44,31 +43,27 @@ def load_bearing_model():
 model = load_bearing_model()
 
 if model is None:
-    st.error("❌ خطا: فایل مدل عمیق 'bearing_model.keras' در مخزن گیت‌هاب یافت نشد! لطفا فایل مدل (12 مگابایتی) را در کنار این کد آپلود کنید.")
+    st.error("❌ خطا: فایل مدل 'bearing_model.keras' یافت نشد.")
     st.stop()
 else:
-    st.success("✅ مدل شبکه عصبی عمیق ۲ بعدی با موفقیت در سرور ابری بارگذاری شد و آماده پردازش است.")
+    st.success("✅ مدل هوش مصنوعی با موفقیت در سرور ابری بارگذاری شد.")
 
-# ۴. بخش دریافت فایل متلب (.mat) از کاربر
+# ۳. دریافت فایل
 st.write("### 📬 بارگذاری سیگنال ارتعاشی بیرینگ")
-uploaded_file = st.file_uploader("لطفاً فایل متلب بیرینگ (.mat) را انتخاب یا اینجا رها کنید:", type=["mat"])
+uploaded_file = st.file_uploader("لطفاً فایل متلب بیرینگ (.mat) را انتخاب کنید:", type=["mat"])
 
 if uploaded_file is not None:
-    st.info("📊 در حال اسکن عمیق و لایه‌برداری از ساختار فایل متلب در سرور...")
+    st.info("📊 در حال استخراج و بهینه‌سازی دیتای سیگنال...")
     
     try:
-        # خواندن مستقیم بایت‌های فایل از حافظه موقت (بدون نیاز به ذخیره روی هارد سرور)
         file_bytes = io.BytesIO(uploaded_file.read())
         mat_contents = sio.loadmat(file_bytes)
         raw_signal = None
         
         keys = [k for k in mat_contents.keys() if not k.startswith('__')]
         
-        # الگوریتم جامع هوشمند برای تفکیک خودکار دیتاست‌ها
         for key in keys:
             data = mat_contents[key]
-            
-            # الف) ساختار چند لایه پادربورن
             if data.dtype.names is not None:
                 if 'Y' in data.dtype.names:
                     y_data = data['Y'][0, 0]
@@ -91,12 +86,10 @@ if uploaded_file is not None:
                                 break
                         if raw_signal is not None: break
 
-            # ب) ساختار ساده و مستقیم CWRU
             elif isinstance(data, np.ndarray) and data.size > 5000:
                 raw_signal = data.flatten()
                 break
 
-        # ج) استراتژی بازگشتی عمیق (پشتیبان نهایی برای پادربورن‌های پیچیده)
         if raw_signal is None:
             for key in keys:
                 def extract_deep(obj):
@@ -115,26 +108,29 @@ if uploaded_file is not None:
                 if raw_signal is not None: break
 
         if raw_signal is None:
-            st.error("❌ خطا: سیستم نتوانست سیگنال عددی معتبری (بالای ۵۰۰۰ نقطه) از درون این فایل متلب استخراج کند.")
+            st.error("❌ دیتای عددی معتبری یافت نشد.")
             st.stop()
 
+        # ---- مدیریت و کنترل سقف مصرف حافظه رم سرور ----
         total_points = len(raw_signal)
-        st.success(f"🎯 استخراج سیگنال با موفقیت انجام شد! تعداد نقاط داده: {total_points} نقطه.")
-
-        # ۵. بخش‌بندی سیگنال (Sliding Window) و استنتاج مدل ۲بعدی
         num_segments = total_points // SIGNAL_LENGTH
+        
+        # اگر تعداد قطعات فایل خیلی زیاد بود، برای جلوگیری از کراش سرور آن را محدود می‌کنیم
+        max_segments_to_process = min(num_segments, 20) 
+        
+        st.success(f"🎯 سیگنال استخراج شد ({total_points} نقطه). در حال پردازش {max_segments_to_process} قطعه بهینه...")
+
         all_predictions = []
         
-        for i in range(num_segments):
+        # پردازش قطعات تا سقف تعیین شده
+        for i in range(max_segments_to_process):
             segment = raw_signal[i*SIGNAL_LENGTH : (i+1)*SIGNAL_LENGTH]
             
-            # نرمال‌سازی سیگنال
             mean_val = np.mean(segment)
             std_val = np.std(segment)
             if std_val == 0: std_val = 1e-6
             normalized_segment = (segment - mean_val) / std_val
             
-            # تبدیل به ماتریکس ۲بعدی و اعمال ۳ کانال رنگی برای MobileNetV2
             matrix_2d = normalized_segment.reshape(IMG_ROWS, IMG_COLS)
             img_rgb = np.stack([matrix_2d, matrix_2d, matrix_2d], axis=-1)
             input_tensor = np.expand_dims(img_rgb, axis=0)
@@ -142,13 +138,11 @@ if uploaded_file is not None:
             pred = model.predict(input_tensor, verbose=0)
             all_predictions.append(pred[0])
             
-        # میانگین‌گیری نهایی برای پایداری خروجی
         mean_predictions = np.mean(all_predictions, axis=0)
         predicted_class_idx = np.argmax(mean_predictions)
         predicted_class_name = class_names[predicted_class_idx]
         confidence = mean_predictions[predicted_class_idx] * 100
 
-        # ۶. نمایش ویژوال و شکیل نتایج نهایی ارزیابی
         st.write("---")
         st.write("## 🎯 نتایج ارزیابی و پایش وضعیت عیب")
         
@@ -162,19 +156,17 @@ if uploaded_file is not None:
         with col2:
             st.metric(label="میزان قطعیت و پایداری مدل", value=f"{confidence:.2f} %")
 
-        # ۷. رسم و نمایش نمودارهای مهندسی در صفحه وب
         st.write("### 📊 تحلیل گرافیکی سیگنال ارتعاشی")
         
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 7))
         
-        # نمودار اول: شکل موج زمانی سیگنال
+        # نمایش شکل موج سیگنال محدود شده جهت کاهش مصرف حافظه گرافیکی
         ax1.plot(raw_signal[:SIGNAL_LENGTH * 2], color='#d62728' if predicted_class_name != 'Healthy' else '#2ca02c', linewidth=0.8)
         ax1.set_title(f"Time Domain Signal (First 2 Segments) - {uploaded_file.name}", fontsize=10, fontweight='bold')
         ax1.set_xlabel("Data Points")
         ax1.set_ylabel("Amplitude")
         ax1.grid(True, linestyle='--', alpha=0.5)
         
-        # نمودار دوم: توزیع درصد احتمالات عیوب
         colors = ['#ff7f0e', '#2ca02c', '#1f77b4', '#9467bd']
         bars = ax2.bar(class_names, mean_predictions * 100, color=colors)
         ax2.set_title("Fault Probability Distribution (%)", fontsize=10, fontweight='bold')
@@ -188,7 +180,7 @@ if uploaded_file is not None:
             
         plt.tight_layout()
         st.pyplot(fig)
-        plt.close(fig)  # بستن شکل برای جلوگیری از پر شدن حافظه رم سرور ابری
+        plt.close(fig) # پاکسازی حافظه فیگورها
 
     except Exception as e:
-        st.error(f"❌ خطا در پردازش یا لایه‌برداری فایل متلب: {e}")
+        st.error(f"❌ خطا در پردازش فایل متلب: {e}")
